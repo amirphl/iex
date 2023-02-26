@@ -14,8 +14,8 @@ import (
 var client http.Client
 
 const (
-	GLOBAL_CURRENCIES_STATS_URL = "https://api.wallex.ir/v1/currencies/stats"
-	ORDER_BOOK_URL              = "https://api.wallex.ir/v1/depth?symbol=%s"
+	ORDER_BOOK_URL      = "https://api.wallex.ir/v1/depth?symbol=%s"
+	ALL_ORDER_BOOKS_URL = "https://api.wallex.ir/v2/depth/all"
 )
 
 type order struct {
@@ -66,7 +66,39 @@ func sendHTTPRequest(method, url string, body io.Reader, apiKey string) (*http.R
 	return client.Do(req)
 }
 
-func parseRawOrder(rawOrder reflect.Value) *order {
+func parseHTTPRespBody(body io.Reader) (interface{}, error) {
+	var rawData interface{}
+	err := json.NewDecoder(body).Decode(&rawData)
+
+	return rawData, err
+}
+
+func extractSuccess(rawData interface{}) bool {
+	success := reflect.ValueOf(rawData).
+		MapIndex(reflect.ValueOf("success")).
+		Elem().
+		Bool()
+
+	return success
+}
+
+func extractMessage(rawData interface{}) string {
+	message := reflect.ValueOf(rawData).
+		MapIndex(reflect.ValueOf("message")).
+		Elem().
+		String()
+
+	return message
+}
+
+func extractRawResult(rawData interface{}) reflect.Value {
+	rawOrderBook := reflect.ValueOf(rawData)
+	rawResult := rawOrderBook.MapIndex(reflect.ValueOf("result")).Elem()
+
+	return rawResult
+}
+
+func parseRawOrder(rawOrder reflect.Value) common.Order {
 	rawPrice := rawOrder.MapIndex(reflect.ValueOf("price")).Elem()
 	rawQuantity := rawOrder.MapIndex(reflect.ValueOf("quantity")).Elem()
 	rawSum := rawOrder.MapIndex(reflect.ValueOf("sum")).Elem()
@@ -82,10 +114,7 @@ func parseRawOrder(rawOrder reflect.Value) *order {
 	}
 }
 
-func parseRawOrderBook(raw interface{}) *orderBook {
-	rawOrderBook := reflect.ValueOf(raw)
-	rawResult := rawOrderBook.MapIndex(reflect.ValueOf("result")).Elem()
-
+func parseRawOrderBook(rawResult reflect.Value, symbol common.Symbol) common.OrderBook {
 	rawAsks := rawResult.MapIndex(reflect.ValueOf("ask")).Elem()
 	rawBids := rawResult.MapIndex(reflect.ValueOf("bid")).Elem()
 
@@ -103,9 +132,32 @@ func parseRawOrderBook(raw interface{}) *orderBook {
 	}
 
 	return &orderBook{
-		asks: asks,
-		bids: bids,
+		symbol: symbol,
+		asks:   asks,
+		bids:   bids,
 	}
+}
+
+func parseRawOrderBooks(rawData interface{}) []common.OrderBook {
+	rawOrderBooks := reflect.ValueOf(rawData)
+	rawResult := rawOrderBooks.MapIndex(reflect.ValueOf("result")).Elem()
+
+	res := make([]common.OrderBook, rawResult.Len())
+
+	iter := rawResult.MapRange()
+	i := 0
+
+	for iter.Next() {
+		rawSymbol := iter.Key()
+		symbol := common.Symbol(rawSymbol.String())
+		rawOrderBook := iter.Value().Elem()
+		orderBook := parseRawOrderBook(rawOrderBook, symbol)
+
+		res[i] = orderBook
+		i++
+	}
+
+	return res
 }
 
 func GetOrderBook(symbol common.Symbol, apiKey string) (common.OrderBook, error) {
@@ -122,26 +174,49 @@ func GetOrderBook(symbol common.Symbol, apiKey string) (common.OrderBook, error)
 		return nil, fmt.Errorf("failed to get orderbook: %d", resp.StatusCode)
 	}
 
-	var rawOrderBook interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&rawOrderBook); err != nil {
+	rawData, err := parseHTTPRespBody(resp.Body)
+
+	if err != nil {
 		return nil, err
 	}
 
-	success := reflect.ValueOf(rawOrderBook).
-		MapIndex(reflect.ValueOf("success")).
-		Elem().
-		Bool()
-
-	if !success {
-		message := reflect.ValueOf(rawOrderBook).
-			MapIndex(reflect.ValueOf("message")).
-			Elem().
-			String()
+	if success := extractSuccess(rawData); !success {
+		message := extractMessage(rawData)
 		return nil, fmt.Errorf("failed to get orderbook: %s", message)
 	}
 
-	res := parseRawOrderBook(rawOrderBook)
-	res.symbol = symbol
+	rawResult := extractRawResult(rawData)
+	res := parseRawOrderBook(rawResult, symbol)
+
+	return res, nil
+}
+
+func GetAllOrderBooks(apiKey string) ([]common.OrderBook, error) {
+	url := ALL_ORDER_BOOKS_URL
+	resp, err := sendHTTPRequest("GET", url, nil, apiKey)
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get all orderbooks: %d", resp.StatusCode)
+	}
+
+	rawData, err := parseHTTPRespBody(resp.Body)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if success := extractSuccess(rawData); !success {
+		message := extractMessage(rawData)
+		return nil, fmt.Errorf("failed to get all orderbooks: %s", message)
+	}
+
+	res := parseRawOrderBooks(rawData)
 
 	return res, nil
 }
