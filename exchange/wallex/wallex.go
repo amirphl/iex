@@ -8,49 +8,49 @@ import (
 	"reflect"
 	"strconv"
 
-	"github.com/amirphl/iex/common"
+	"github.com/amirphl/iex/order"
 )
 
 var client http.Client
 
 const (
-	ORDER_BOOK_URL      = "https://api.wallex.ir/v1/depth?symbol=%s"
-	ALL_ORDER_BOOKS_URL = "https://api.wallex.ir/v2/depth/all"
+	OrderBookURL     = "https://api.wallex.ir/v1/depth?symbol=%s"
+	AllOrderBooksURL = "https://api.wallex.ir/v2/depth/all"
 )
 
-type order struct {
+type order_ struct {
 	price    float64
 	quantity float64
 	sum      float64
 }
 
 type orderBook struct {
-	symbol common.Symbol
-	asks   []common.Order
-	bids   []common.Order
+	symbol string
+	asks   []order.Order
+	bids   []order.Order
 }
 
-func (o *order) GetPrice() float64 {
+func (o *order_) Price() float64 {
 	return o.price
 }
 
-func (o *order) GetQuantity() float64 {
+func (o *order_) Quantity() float64 {
 	return o.quantity
 }
 
-func (o *order) GetSum() float64 {
+func (o *order_) Sum() float64 {
 	return o.sum
 }
 
-func (o *orderBook) GetSymbol() common.Symbol {
+func (o *orderBook) Symbol() string {
 	return o.symbol
 }
 
-func (o *orderBook) GetAsks() []common.Order {
+func (o *orderBook) Asks() []order.Order {
 	return o.asks
 }
 
-func (o *orderBook) GetBids() []common.Order {
+func (o *orderBook) Bids() []order.Order {
 	return o.bids
 }
 
@@ -73,32 +73,13 @@ func parseHTTPRespBody(body io.Reader) (interface{}, error) {
 	return rawData, err
 }
 
-func extractSuccess(rawData interface{}) bool {
-	success := reflect.ValueOf(rawData).
-		MapIndex(reflect.ValueOf("success")).
-		Elem().
-		Bool()
+func extractKey(rawData reflect.Value, key string) reflect.Value {
+	val := rawData.MapIndex(reflect.ValueOf(key)).Elem()
 
-	return success
+	return val
 }
 
-func extractMessage(rawData interface{}) string {
-	message := reflect.ValueOf(rawData).
-		MapIndex(reflect.ValueOf("message")).
-		Elem().
-		String()
-
-	return message
-}
-
-func extractRawResult(rawData interface{}) reflect.Value {
-	rawOrderBook := reflect.ValueOf(rawData)
-	rawResult := rawOrderBook.MapIndex(reflect.ValueOf("result")).Elem()
-
-	return rawResult
-}
-
-func parseRawOrder(rawOrder reflect.Value) common.Order {
+func parseRawOrder(rawOrder reflect.Value) order.Order {
 	rawPrice := rawOrder.MapIndex(reflect.ValueOf("price")).Elem()
 	rawQuantity := rawOrder.MapIndex(reflect.ValueOf("quantity")).Elem()
 	rawSum := rawOrder.MapIndex(reflect.ValueOf("sum")).Elem()
@@ -107,19 +88,19 @@ func parseRawOrder(rawOrder reflect.Value) common.Order {
 	quantity := rawQuantity.Float()
 	sum, _ := strconv.ParseFloat(rawSum.String(), 64)
 
-	return &order{
+	return &order_{
 		price:    price,
 		quantity: quantity,
 		sum:      sum,
 	}
 }
 
-func parseRawOrderBook(rawResult reflect.Value, symbol common.Symbol) common.OrderBook {
-	rawAsks := rawResult.MapIndex(reflect.ValueOf("ask")).Elem()
-	rawBids := rawResult.MapIndex(reflect.ValueOf("bid")).Elem()
+func parseRawOrderBook(rawOrderBook reflect.Value, symbol string) order.OrderBook {
+	rawAsks := rawOrderBook.MapIndex(reflect.ValueOf("ask")).Elem()
+	rawBids := rawOrderBook.MapIndex(reflect.ValueOf("bid")).Elem()
 
-	asks := make([]common.Order, rawAsks.Len())
-	bids := make([]common.Order, rawBids.Len())
+	asks := make([]order.Order, rawAsks.Len())
+	bids := make([]order.Order, rawBids.Len())
 
 	for i := 0; i < rawAsks.Len(); i++ {
 		v := rawAsks.Index(i).Elem()
@@ -138,18 +119,14 @@ func parseRawOrderBook(rawResult reflect.Value, symbol common.Symbol) common.Ord
 	}
 }
 
-func parseRawOrderBooks(rawData interface{}) []common.OrderBook {
-	rawOrderBooks := reflect.ValueOf(rawData)
-	rawResult := rawOrderBooks.MapIndex(reflect.ValueOf("result")).Elem()
+func parseRawOrderBooks(rawOrderBooks reflect.Value) []order.OrderBook {
+	res := make([]order.OrderBook, rawOrderBooks.Len())
 
-	res := make([]common.OrderBook, rawResult.Len())
-
-	iter := rawResult.MapRange()
+	iter := rawOrderBooks.MapRange()
 	i := 0
 
 	for iter.Next() {
-		rawSymbol := iter.Key()
-		symbol := common.Symbol(rawSymbol.String())
+		symbol := iter.Key().String()
 		rawOrderBook := iter.Value().Elem()
 		orderBook := parseRawOrderBook(rawOrderBook, symbol)
 
@@ -160,8 +137,8 @@ func parseRawOrderBooks(rawData interface{}) []common.OrderBook {
 	return res
 }
 
-func GetOrderBook(symbol common.Symbol, apiKey string) (common.OrderBook, error) {
-	url := fmt.Sprintf(ORDER_BOOK_URL, symbol)
+func GetOrderBook(symbol string, apiKey string) (order.OrderBook, error) {
+	url := fmt.Sprintf(OrderBookURL, symbol)
 	resp, err := sendHTTPRequest("GET", url, nil, apiKey)
 
 	if err != nil {
@@ -180,19 +157,21 @@ func GetOrderBook(symbol common.Symbol, apiKey string) (common.OrderBook, error)
 		return nil, err
 	}
 
-	if success := extractSuccess(rawData); !success {
-		message := extractMessage(rawData)
+	refData := reflect.ValueOf(rawData)
+
+	if success := extractKey(refData, "success").Bool(); !success {
+		message := extractKey(refData, "message").String()
 		return nil, fmt.Errorf("failed to get orderbook: %s", message)
 	}
 
-	rawResult := extractRawResult(rawData)
-	res := parseRawOrderBook(rawResult, symbol)
+	refRes := extractKey(refData, "result")
+	book := parseRawOrderBook(refRes, symbol)
 
-	return res, nil
+	return book, nil
 }
 
-func GetAllOrderBooks(apiKey string) ([]common.OrderBook, error) {
-	url := ALL_ORDER_BOOKS_URL
+func GetAllOrderBooks(apiKey string) ([]order.OrderBook, error) {
+	url := AllOrderBooksURL
 	resp, err := sendHTTPRequest("GET", url, nil, apiKey)
 
 	if err != nil {
@@ -211,12 +190,15 @@ func GetAllOrderBooks(apiKey string) ([]common.OrderBook, error) {
 		return nil, err
 	}
 
-	if success := extractSuccess(rawData); !success {
-		message := extractMessage(rawData)
+	refData := reflect.ValueOf(rawData)
+
+	if success := extractKey(refData, "success").Bool(); !success {
+		message := extractKey(refData, "message").String()
 		return nil, fmt.Errorf("failed to get all orderbooks: %s", message)
 	}
 
-	res := parseRawOrderBooks(rawData)
+	refRes := extractKey(refData, "result")
+	books := parseRawOrderBooks(refRes)
 
-	return res, nil
+	return books, nil
 }
