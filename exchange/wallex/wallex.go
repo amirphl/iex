@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"strconv"
 
-	"github.com/amirphl/iex/market"
+	"github.com/amirphl/iex/account"
 	"github.com/amirphl/iex/order"
 )
 
@@ -120,7 +120,7 @@ func parseRawOrder(rawOrder reflect.Value) order.Order {
 	}
 }
 
-func parseRawFeeRate(rawFeeRate reflect.Value, symbol string) market.FeeRate {
+func parseRawFeeRate(rawFeeRate reflect.Value, symbol string) account.FeeRate {
 	rawMaker := rawFeeRate.MapIndex(reflect.ValueOf("makerFeeRate")).Elem()
 	rawTaker := rawFeeRate.MapIndex(reflect.ValueOf("takerFeeRate")).Elem()
 	rawRecentDaysSum := rawFeeRate.MapIndex(reflect.ValueOf("recent_days_sum")).Elem()
@@ -179,8 +179,8 @@ func parseRawOrderBooks(rawOrderBooks reflect.Value) []order.OrderBook {
 	return res
 }
 
-func parseRawFeeRates(rawFeeRates reflect.Value) map[string]market.FeeRate {
-	res := make(map[string]market.FeeRate, rawFeeRates.Len())
+func parseRawFeeRates(rawFeeRates reflect.Value) map[string]account.FeeRate {
+	res := make(map[string]account.FeeRate, rawFeeRates.Len())
 
 	iter := rawFeeRates.MapRange()
 
@@ -267,7 +267,7 @@ func AllOrderBooks(apiKey string) ([]order.OrderBook, error) {
 	return books, nil
 }
 
-func FeeRate(symbol string, apiKey string) (market.FeeRate, error) {
+func FeeRate(symbol string, apiKey string) (account.FeeRate, error) {
 	feeRates, err := FeeRates(apiKey)
 
 	if err != nil {
@@ -277,7 +277,7 @@ func FeeRate(symbol string, apiKey string) (market.FeeRate, error) {
 	return feeRates[symbol], nil
 }
 
-func FeeRates(apiKey string) (map[string]market.FeeRate, error) {
+func FeeRates(apiKey string) (map[string]account.FeeRate, error) {
 	url := feeRateURL
 	resp, err := sendHTTPRequest("GET", url, nil, apiKey)
 

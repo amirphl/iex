@@ -1,4 +1,4 @@
-package market
+package account
 
 type FeeRate interface {
 	Symbol() string
