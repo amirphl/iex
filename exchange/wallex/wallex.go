@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"strconv"
 
-	"github.com/amirphl/iex/market"
+	"github.com/amirphl/iex/account"
 	"github.com/amirphl/iex/order"
 )
 
@@ -18,6 +18,7 @@ const (
 	orderBookURL     = "https://api.wallex.ir/v1/depth?symbol=%s"
 	allOrderBooksURL = "https://api.wallex.ir/v2/depth/all"
 	feeRateURL       = "https://api.wallex.ir/v1/account/fee"
+	balanceURL       = "https://api.wallex.ir/v1/account/balances"
 )
 
 type order_ struct {
@@ -37,6 +38,14 @@ type feeRate struct {
 	makerFeeRate  float64
 	takerFeeRate  float64
 	recentDaysSum float64
+}
+
+type balance struct {
+	asset  string
+	faName string
+	fiat   bool
+	value  float64
+	locked float64
 }
 
 func (o *order_) Price() float64 {
@@ -79,6 +88,26 @@ func (f *feeRate) RecentDaysSum() float64 {
 	return f.recentDaysSum
 }
 
+func (b *balance) Asset() string {
+	return b.asset
+}
+
+func (b *balance) FAName() string {
+	return b.faName
+}
+
+func (b *balance) Fiat() bool {
+	return b.fiat
+}
+
+func (b *balance) Value() float64 {
+	return b.value
+}
+
+func (b *balance) Locked() float64 {
+	return b.locked
+}
+
 func sendHTTPRequest(method, url string, body io.Reader, apiKey string) (*http.Response, error) {
 	req, err := http.NewRequest(method, url, body)
 
@@ -106,11 +135,10 @@ func extractKey(rawData reflect.Value, key string) reflect.Value {
 
 func parseRawOrder(rawOrder reflect.Value) order.Order {
 	rawPrice := rawOrder.MapIndex(reflect.ValueOf("price")).Elem()
-	rawQuantity := rawOrder.MapIndex(reflect.ValueOf("quantity")).Elem()
+	quantity := rawOrder.MapIndex(reflect.ValueOf("quantity")).Elem().Float()
 	rawSum := rawOrder.MapIndex(reflect.ValueOf("sum")).Elem()
 
 	price, _ := strconv.ParseFloat(rawPrice.String(), 64)
-	quantity := rawQuantity.Float()
 	sum, _ := strconv.ParseFloat(rawSum.String(), 64)
 
 	return &order_{
@@ -120,20 +148,38 @@ func parseRawOrder(rawOrder reflect.Value) order.Order {
 	}
 }
 
-func parseRawFeeRate(rawFeeRate reflect.Value, symbol string) market.FeeRate {
+func parseRawFeeRate(rawFeeRate reflect.Value, symbol string) account.FeeRate {
 	rawMaker := rawFeeRate.MapIndex(reflect.ValueOf("makerFeeRate")).Elem()
 	rawTaker := rawFeeRate.MapIndex(reflect.ValueOf("takerFeeRate")).Elem()
-	rawRecentDaysSum := rawFeeRate.MapIndex(reflect.ValueOf("recent_days_sum")).Elem()
+	recentDaysSum := rawFeeRate.MapIndex(reflect.ValueOf("recent_days_sum")).Elem().Float()
 
 	maker, _ := strconv.ParseFloat(rawMaker.String(), 64)
 	taker, _ := strconv.ParseFloat(rawTaker.String(), 64)
-	recentDaysSum := rawRecentDaysSum.Float()
 
 	return &feeRate{
 		symbol:        symbol,
 		makerFeeRate:  maker,
 		takerFeeRate:  taker,
 		recentDaysSum: recentDaysSum,
+	}
+}
+
+func parseRawBalance(rawBalance reflect.Value) account.Balance {
+	asset := rawBalance.MapIndex(reflect.ValueOf("asset")).Elem().String()
+	faName := rawBalance.MapIndex(reflect.ValueOf("faName")).Elem().String()
+	fiat := rawBalance.MapIndex(reflect.ValueOf("fiat")).Elem().Bool()
+	rawValue := rawBalance.MapIndex(reflect.ValueOf("value")).Elem()
+	rawLocked := rawBalance.MapIndex(reflect.ValueOf("locked")).Elem()
+
+	value, _ := strconv.ParseFloat(rawValue.String(), 64)
+	locked, _ := strconv.ParseFloat(rawLocked.String(), 64)
+
+	return &balance{
+		asset:  asset,
+		faName: faName,
+		fiat:   fiat,
+		value:  value,
+		locked: locked,
 	}
 }
 
@@ -161,26 +207,24 @@ func parseRawOrderBook(rawOrderBook reflect.Value, symbol string) order.OrderBoo
 	}
 }
 
-func parseRawOrderBooks(rawOrderBooks reflect.Value) []order.OrderBook {
-	res := make([]order.OrderBook, rawOrderBooks.Len())
+func parseRawOrderBooks(rawOrderBooks reflect.Value) map[string]order.OrderBook {
+	res := make(map[string]order.OrderBook, rawOrderBooks.Len())
 
 	iter := rawOrderBooks.MapRange()
-	i := 0
 
 	for iter.Next() {
 		symbol := iter.Key().String()
 		rawOrderBook := iter.Value().Elem()
 		orderBook := parseRawOrderBook(rawOrderBook, symbol)
 
-		res[i] = orderBook
-		i++
+		res[symbol] = orderBook
 	}
 
 	return res
 }
 
-func parseRawFeeRates(rawFeeRates reflect.Value) map[string]market.FeeRate {
-	res := make(map[string]market.FeeRate, rawFeeRates.Len())
+func parseRawFeeRates(rawFeeRates reflect.Value) map[string]account.FeeRate {
+	res := make(map[string]account.FeeRate, rawFeeRates.Len())
 
 	iter := rawFeeRates.MapRange()
 
@@ -196,6 +240,22 @@ func parseRawFeeRates(rawFeeRates reflect.Value) map[string]market.FeeRate {
 		feeRate := parseRawFeeRate(rawFeeRate, symbol)
 
 		res[symbol] = feeRate
+	}
+
+	return res
+}
+
+func parseRawBalances(rawBalances reflect.Value) map[string]account.Balance {
+	res := make(map[string]account.Balance, rawBalances.Len())
+
+	iter := rawBalances.MapRange()
+
+	for iter.Next() {
+		asset := iter.Key().String()
+		rawBalance := iter.Value().Elem()
+		balance := parseRawBalance(rawBalance)
+
+		res[asset] = balance
 	}
 
 	return res
@@ -234,7 +294,7 @@ func OrderBook(symbol string, apiKey string) (order.OrderBook, error) {
 	return book, nil
 }
 
-func AllOrderBooks(apiKey string) ([]order.OrderBook, error) {
+func AllOrderBooks(apiKey string) (map[string]order.OrderBook, error) {
 	url := allOrderBooksURL
 	resp, err := sendHTTPRequest("GET", url, nil, apiKey)
 
@@ -267,17 +327,22 @@ func AllOrderBooks(apiKey string) ([]order.OrderBook, error) {
 	return books, nil
 }
 
-func FeeRate(symbol string, apiKey string) (market.FeeRate, error) {
+// TODO Implement by query param. performance problem
+func FeeRate(symbol string, apiKey string) (account.FeeRate, error) {
 	feeRates, err := FeeRates(apiKey)
 
 	if err != nil {
 		return nil, err
 	}
 
-	return feeRates[symbol], nil
+	if val, ok := feeRates[symbol]; ok {
+		return val, nil
+	}
+
+	return nil, fmt.Errorf("symbol %s not found", symbol)
 }
 
-func FeeRates(apiKey string) (map[string]market.FeeRate, error) {
+func FeeRates(apiKey string) (map[string]account.FeeRate, error) {
 	url := feeRateURL
 	resp, err := sendHTTPRequest("GET", url, nil, apiKey)
 
@@ -308,4 +373,54 @@ func FeeRates(apiKey string) (map[string]market.FeeRate, error) {
 	feeRates := parseRawFeeRates(refRes)
 
 	return feeRates, nil
+}
+
+// TODO Implement by query param. performance problem
+func Balance(asset string, apiKey string) (account.Balance, error) {
+	balances, err := Balances(apiKey)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if val, ok := balances[asset]; ok {
+		return val, nil
+	}
+
+	return nil, fmt.Errorf("asset %s not found", asset)
+}
+
+func Balances(apiKey string) (map[string]account.Balance, error) {
+	url := balanceURL
+	resp, err := sendHTTPRequest("GET", url, nil, apiKey)
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get balances: %d", resp.StatusCode)
+	}
+
+	rawData, err := parseHTTPRespBody(resp.Body)
+
+	if err != nil {
+		return nil, err
+	}
+
+	refData := reflect.ValueOf(rawData)
+
+	if success := extractKey(refData, "success").Bool(); !success {
+		message := extractKey(refData, "message").String()
+		return nil, fmt.Errorf("failed to get balances: %s", message)
+	}
+
+	refRes := extractKey(refData, "result")
+	refBal := extractKey(refRes, "balances")
+
+	balances := parseRawBalances(refBal)
+
+	return balances, nil
 }
